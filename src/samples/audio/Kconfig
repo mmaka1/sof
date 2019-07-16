@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: BSD-3-Clause
+
+menu "Audio component samples"
+	visible if SAMPLES
+
+	config SAMPLE_AMP
+		bool "Build Amplifier sample code"
+		default n
+		help
+			Select to build amplifier sample code
+
+endmenu
