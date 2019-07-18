@@ -13,7 +13,7 @@ DECLARE_SOF_RT_UUID("amp", amp_uuid, 0x1d501197, 0xda27, 0x4697,
 DECLARE_TR_CTX(amp_tr, SOF_UUID(amp_uuid), LOG_LEVEL_INFO);
 
 struct amp_comp_data {
-	int placeholder;
+	int channel_volume[2];
 };
 
 static struct comp_dev *amp_new(const struct comp_driver *drv,
@@ -41,11 +41,20 @@ static struct comp_dev *amp_new(const struct comp_driver *drv,
 		       sizeof(struct sof_ipc_comp_process));
 	assert(!ret);
 
+	cd->channel_volume[0] = 1;
+	cd->channel_volume[1] = 1;
+
+	if (ipc_amp->size == sizeof(cd->channel_volume)) {
+		memcpy_s(cd->channel_volume, sizeof(cd->channel_volume),
+			 ipc_amp->data, ipc_amp->size);
+	}
+
 	comp_set_drvdata(dev, cd);
 
 	dev->state = COMP_STATE_READY;
 
-	comp_dbg(dev, "amplifier created");
+	comp_dbg(dev, "amplifier created vol[0] %d vol[1] %d",
+		 cd->channel_volume[0], cd->channel_volume[1]);
 
 	return dev;
 }
@@ -101,6 +110,7 @@ static int amp_reset(struct comp_dev *dev)
 
 static int amp_copy(struct comp_dev *dev)
 {
+	struct amp_comp_data *cd = comp_get_drvdata(dev);
 	struct comp_copy_limits cl;
 	struct comp_buffer *source;
 	struct comp_buffer *sink;
@@ -125,7 +135,10 @@ static int amp_copy(struct comp_dev *dev)
 							 buff_frag);
 			dst = audio_stream_write_frag_s16(&sink->stream,
 							  buff_frag);
-			*dst = *src;
+			if (cd->channel_volume[channel])
+				*dst = *src;
+			else
+				*dst = 0;
 			++buff_frag;
 		}
 	}
@@ -138,6 +151,74 @@ static int amp_copy(struct comp_dev *dev)
 	return 0;
 }
 
+static int amp_cmd_set_data(struct comp_dev *dev,
+			    struct sof_ipc_ctrl_data *cdata)
+{
+	struct amp_comp_data *cd = comp_get_drvdata(dev);
+
+	if (cdata->cmd != SOF_CTRL_CMD_BINARY) {
+		comp_err(dev, "amp_cmd_set_data() error: invalid cmd %d",
+			 cdata->cmd);
+		return -EINVAL;
+	}
+
+	if (cdata->data->size != sizeof(cd->channel_volume)) {
+		comp_err(dev, "amp_cmd_set_data() error: invalid data size %d",
+			 cdata->data->size);
+		return -EINVAL;
+	}
+
+	memcpy_s(cd->channel_volume, sizeof(cd->channel_volume),
+		 cdata->data->data, cdata->data->size);
+	comp_dbg(dev, "amplifier new settings vol[0] %d vol[1] %d",
+		 cd->channel_volume[0], cd->channel_volume[1]);
+	return 0;
+}
+
+static int amp_cmd_get_data(struct comp_dev *dev,
+			    struct sof_ipc_ctrl_data *cdata, int max_size)
+{
+	struct amp_comp_data *cd = comp_get_drvdata(dev);
+
+	if (cdata->cmd != SOF_CTRL_CMD_BINARY) {
+		comp_err(dev, "amp_cmd_get_data() error: invalid cmd %d",
+			 cdata->cmd);
+		return -EINVAL;
+	}
+
+	if (sizeof(cd->channel_volume) > max_size)
+		return -EINVAL;
+
+	memcpy_s(cdata->data->data,
+		 ((struct sof_abi_hdr *)(cdata->data))->size,
+		 cd->channel_volume,
+		 sizeof(cd->channel_volume));
+	cdata->data->abi = SOF_ABI_VERSION;
+	cdata->data->size = sizeof(cd->channel_volume);
+
+	return 0;
+}
+
+static int amp_cmd(struct comp_dev *dev, int cmd, void *data, int max_data_size)
+{
+	struct sof_ipc_ctrl_data *cdata = data;
+	int ret = 0;
+
+	switch (cmd) {
+	case COMP_CMD_SET_DATA:
+		ret = amp_cmd_set_data(dev, cdata);
+		break;
+	case COMP_CMD_GET_DATA:
+		ret = amp_cmd_get_data(dev, cdata, max_data_size);
+		break;
+	default:
+		comp_err(dev, "amp_cmd() error: unhandled command %d", cmd);
+		ret = -EINVAL;
+		break;
+	}
+	return ret;
+}
+
 static const struct comp_driver comp_amp = {
 	.uid = SOF_RT_UUID(amp_uuid),
 	.tctx = &amp_tr,
@@ -145,7 +226,7 @@ static const struct comp_driver comp_amp = {
 		.create = amp_new,
 		.free = amp_free,
 		.params = NULL,
-		.cmd = NULL,
+		.cmd = amp_cmd,
 		.trigger = amp_trigger,
 		.prepare = amp_prepare,
 		.reset = amp_reset,
